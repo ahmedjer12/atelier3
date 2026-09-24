@@ -1,3 +1,6 @@
+import redis
+from unittest.mock import patch, MagicMock
+
 from app import alert_threshold, sanitize_input, app
 
 
@@ -9,15 +12,37 @@ def test_sanitize_input_escapes_html():
     assert sanitize_input("<script>") == "&lt;script&gt;"
 
 
-def test_health_endpoint():
-    client = app.test_client()
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.get_json()["status"] == "ok"
+def test_health_endpoint_ok():
+    with patch("app.get_redis_client") as mock_get_redis_client:
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+        mock_get_redis_client.return_value = mock_client
+
+        client = app.test_client()
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "ok"
+        assert response.get_json()["redis"] == "ok"
+
+
+def test_health_endpoint_redis_down():
+    with patch("app.get_redis_client") as mock_get_redis_client:
+        mock_client = MagicMock()
+        mock_client.ping.side_effect = redis.RedisError("Redis unavailable")
+        mock_get_redis_client.return_value = mock_client
+
+        client = app.test_client()
+        response = client.get("/health")
+
+        assert response.status_code == 503
+        assert response.get_json()["status"] == "error"
+        assert response.get_json()["redis"] == "unavailable"
 
 
 def test_status_endpoint():
     client = app.test_client()
     response = client.get("/status")
+
     assert response.status_code == 200
     assert response.get_json()["service"] == "projet-devops-groupe-demo"
