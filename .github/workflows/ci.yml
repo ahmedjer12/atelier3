@@ -1,77 +1,100 @@
-name: CI/CD Pipeline
+name: CI
 
 on:
   push:
     branches:
       - main
+  pull_request:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Setup Python environment
+        uses: ./.github/actions/setup-python
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
       - name: Run flake8
-        run: flake8 app.py test_app.py
+        run: python -m flake8 app.py test_app.py
 
   test:
     runs-on: ubuntu-latest
-    needs: lint
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Setup Python environment
+        uses: ./.github/actions/setup-python
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Run tests with coverage and JUnit report
+        run: >
+          python -m pytest -v
+          --cov=app
+          --cov-report=xml:coverage.xml
+          --junitxml=junit.xml
 
-      - name: Run tests
-        run: pytest -v
+      - name: Upload test reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-python-${{ matrix.python-version }}
+          path: |
+            coverage.xml
+            junit.xml
 
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
-    needs: test
-
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 10
+    needs:
+      - lint
+      - test
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Docker image
+        run: docker build -t atelier3-ci:${{ github.sha }} .
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+  ci-ok:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - lint
+      - test
+      - build
+
+    steps:
+      - name: CI succeeded
+        run: echo "All CI jobs passed successfully"
