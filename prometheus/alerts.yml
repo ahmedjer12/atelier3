@@ -1,0 +1,29 @@
+groups:
+  - name: application-alerts
+    rules:
+      - alert: High5xxErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'erreurs HTTP 5xx eleve"
+          description: "Le taux de reponses 5xx depasse 5% pendant 5 minutes."
+
+      - alert: HighRequestLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence HTTP p95 elevee"
+          description: "La latence p95 depasse 500 ms pendant 5 minutes."
