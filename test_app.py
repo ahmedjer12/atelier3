@@ -1,3 +1,4 @@
+import os
 import redis
 from unittest.mock import patch, MagicMock
 
@@ -46,3 +47,39 @@ def test_status_endpoint():
 
     assert response.status_code == 200
     assert response.get_json()["service"] == "projet-devops-groupe-demo"
+
+
+def test_metrics_endpoint():
+    client = app.test_client()
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert b"http_requests_total" in response.data
+    assert b"http_request_duration_seconds" in response.data
+    assert b"app_deployment_info" in response.data
+
+
+def test_visits_endpoint_with_real_redis():
+    os.environ["REDIS_HOST"] = "localhost"
+    os.environ["REDIS_PORT"] = "6379"
+
+    redis_client = redis.Redis(
+        host="localhost",
+        port=6379,
+        decode_responses=True,
+    )
+
+    redis_client.delete("visits")
+
+    client = app.test_client()
+
+    response1 = client.get("/visits")
+    response2 = client.get("/visits")
+
+    assert response1.status_code == 200
+    assert response1.get_json()["visits"] == 1
+
+    assert response2.status_code == 200
+    assert response2.get_json()["visits"] == 2
+
+    redis_client.delete("visits")
