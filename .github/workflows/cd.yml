@@ -1,0 +1,196 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  VERSION: 1.0.0
+
+jobs:
+  build-and-push:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: vars
+        shell: bash
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "short_sha=${TARGET_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.short_sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    needs: build-and-push
+
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      NEW_TAG: ${{ needs.build-and-push.outputs.short_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Log in to GHCR
+        shell: powershell
+        run: |
+          "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Read previous deployed SHA
+        id: previous
+        shell: powershell
+        run: |
+          $stateDir = "C:\actions-runner\deploy-state"
+          $stateFile = "$stateDir\previous_sha.txt"
+
+          if (!(Test-Path $stateDir)) {
+            New-Item -ItemType Directory -Path $stateDir | Out-Null
+          }
+
+          if (Test-Path $stateFile) {
+            $previous = Get-Content $stateFile
+            "sha=$previous" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "sha=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Pull new image
+        shell: powershell
+        run: |
+          docker pull "${{ env.IMAGE }}:${{ env.NEW_TAG }}"
+
+      - name: Deploy new image
+        shell: powershell
+        run: |
+          $env:APP_IMAGE="${{ env.IMAGE }}:${{ env.NEW_TAG }}"
+          $env:APP_VERSION="${{ env.VERSION }}"
+          $env:GIT_SHA="${{ env.NEW_TAG }}"
+
+          docker compose --profile green up -d --pull always
+
+      - name: Healthcheck with retries
+        id: health
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $success = $false
+
+          for ($i = 1; $i -le 3; $i++) {
+            try {
+              Write-Host "Healthcheck attempt $i/3"
+
+              $response = Invoke-WebRequest `
+                -Uri "http://localhost:5000/health" `
+                -UseBasicParsing
+
+              if ($response.StatusCode -eq 200) {
+                Write-Host "Healthcheck successful"
+                $success = $true
+                break
+              }
+            } catch {
+              Write-Host "Healthcheck attempt $i failed"
+            }
+
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $success) {
+            Write-Error "Application healthcheck failed after 3 attempts"
+            exit 1
+          }
+
+      - name: Save current SHA
+        if: steps.health.outcome == 'success'
+        shell: powershell
+        run: |
+          $stateDir = "C:\actions-runner\deploy-state"
+          $stateFile = "$stateDir\previous_sha.txt"
+
+          if (!(Test-Path $stateDir)) {
+            New-Item -ItemType Directory -Path $stateDir | Out-Null
+          }
+
+          "${{ env.NEW_TAG }}" | Out-File -FilePath $stateFile
+
+          Write-Host "Successfully deployed SHA: ${{ env.NEW_TAG }}"
+
+      - name: Rollback
+        if: steps.health.outcome == 'failure'
+        shell: powershell
+        run: |
+          $previous = "${{ steps.previous.outputs.sha }}"
+
+          if ([string]::IsNullOrWhiteSpace($previous)) {
+            Write-Error "No previous SHA available for rollback"
+            exit 1
+          }
+
+          Write-Host "Rolling back to SHA: $previous"
+
+          docker pull "${{ env.IMAGE }}:$previous"
+
+          $env:APP_IMAGE="${{ env.IMAGE }}:$previous"
+          $env:APP_VERSION="${{ env.VERSION }}"
+          $env:GIT_SHA="$previous"
+
+          docker compose --profile green up -d --pull always
+
+          Write-Host "Rollback completed"
+
+          exit 1
