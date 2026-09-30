@@ -1,114 +1,321 @@
-# Atelier 3 - Conteneurisation Docker
+# Projet DevOps ESIEA
 
-## Application
+Projet réalisé dans le cadre de l'évaluation DevOps.
 
-Application Flask conteneurisee avec Docker, Gunicorn et Redis.
+L'objectif est de mettre en place une chaîne DevOps complète allant du code source jusqu'au déploiement d'une image Docker, avec :
 
-Endpoints disponibles :
+- conteneurisation Docker ;
+- Docker Compose ;
+- tests automatisés ;
+- lint ;
+- CI avec GitHub Actions ;
+- CD avec GitHub Actions ;
+- GitHub Container Registry (GHCR) ;
+- déploiement sur un self-hosted runner ;
+- healthcheck et rollback ;
+- métriques Prometheus ;
+- règles d'alerte Prometheus.
 
-- `/health` : verification de l'etat de l'application
-- `/status` : informations sur le service
-- `/visits` : compteur de visites persistant dans Redis
+---
 
-## Build de l'image
+## 1. Architecture
 
-Construire l'image Docker multi-stage :
+L'application est une API Flask utilisant Redis.
 
-```bash
-docker build -t atelier3-web .
-```
+Architecture locale :
 
-## Lancer la stack complete
+Client
+  |
+  v
+Nginx :5000
+  |
+  v
+Flask / Gunicorn
+  |
+  v
+Redis
 
-```bash
-docker compose up -d --build
-```
+Les services principaux sont :
+- app-blue : instance Flask du profil blue ;
+- app-green : instance Flask du profil green ;
+- redis : stockage utilisé par l'application ;
+- nginx : reverse proxy exposé sur le port 5000.
+2. Technologies utilisées
+- Python 3.11 / 3.12
+- Flask
+- Redis
+- Gunicorn
+- Docker
+- Docker Compose
+- Nginx
+- Pytest
+- Flake8
+- Pytest Coverage
+- GitHub Actions
+- GitHub Container Registry
+- Prometheus Client
+3. Structure du projet
+atelier3/
+|
+|-- .github/
+|   |-- actions/
+|   |   `-- setup-python/
+|   |       `-- action.yml
+|   |
+|   `-- workflows/
+|       |-- ci.yml
+|       `-- cd.yml
+|
+|-- nginx/
+|   `-- default.conf
+|
+|-- prometheus/
+|   `-- alerts.yml
+|
+|-- app.py
+|-- test_app.py
+|-- requirements.txt
+|-- Dockerfile
+|-- Dockerfile.naive
+|-- docker-compose.yml
+|-- .dockerignore
+|-- .flake8
+`-- README.md
 
-Verifier les services :
+4. Installation
+Cloner le dépôt :
+git clone https://github.com/ahmedjer12/atelier3.git
+cd atelier3
 
-```bash
-docker compose ps
-```
+Installer les dépendances Python :
+python -m pip install -r requirements.txt
 
-Arreter la stack :
+5. Lancement local avec Docker Compose
+Pour lancer l'environnement green :
+docker compose --profile green up -d --build
 
-```bash
-docker compose down
-```
+Vérifier les conteneurs :
+docker compose --profile green ps
 
-## Tests
+L'application est accessible sur :
+http://localhost:5000
 
-Tester l'application :
+Pour arrêter les conteneurs :
+docker compose --profile green down
 
-```bash
+6. Endpoints de l'application
+Healthcheck
+GET /health
+
+Exemple :
 curl http://localhost:5000/health
-```
 
-Resultat attendu :
+Réponse attendue :
+{
+  "redis": "ok",
+  "status": "ok"
+}
 
-```json
-{"status":"ok"}
-```
+Status
+GET /status
 
-Tester le compteur Redis :
+Expose notamment :
+- la version ;
+- le SHA déployé ;
+- la couleur de déploiement.
+Visits
+GET /visits
 
-```bash
-curl http://localhost:5000/visits
-```
+Cet endpoint utilise réellement Redis pour incrémenter un compteur.
+Metrics
+GET /metrics
 
-## Utilisateur non-root
+Exemple :
+curl http://localhost:5000/metrics
 
-Verifier l'utilisateur du conteneur web :
+7. Tests
+Lancer les tests :
+python -m pytest -v
 
-```bash
-docker compose exec web whoami
-```
+Les tests couvrent notamment :
+- fonctions applicatives ;
+- endpoint /health ;
+- comportement en cas d'indisponibilité Redis ;
+- endpoint /status ;
+- endpoint /metrics ;
+- interaction réelle avec Redis via /visits.
+8. Lint
+Lancer Flake8 :
+python -m flake8 app.py test_app.py
 
-Resultat attendu :
+9. Docker
+Le Dockerfile utilise un build multi-stage.
+Principales caractéristiques :
+- image Python versionnée ;
+- runtime basé sur python:3.12-slim ;
+- utilisateur non-root appuser ;
+- HEALTHCHECK sur /health ;
+- exécution avec Gunicorn ;
+- .dockerignore.
+Construire l'image manuellement :
+docker build -t atelier3-app .
 
-```text
-appuser
-```
+10. Continuous Integration
+Le workflow CI se trouve dans :
+.github/workflows/ci.yml
 
-## Comparaison des images Docker
+La CI est exécutée lors :
+- des Pull Requests ;
+- des push sur main.
+Elle contient quatre jobs principaux :
+lint
+test
+build
+ci-ok
 
-| Image | Disk usage | Content size |
-|---|---:|---:|
-| Image naive | 1.65 GB | 423 MB |
-| Image multi-stage | 231 MB | 55.6 MB |
+Matrix de tests
+Les tests sont exécutés sur :
+Python 3.11
+Python 3.12
 
-Le build multi-stage avec `python:3.12-slim` permet une reduction d'environ **86 %** de la taille de l'image.
+Redis dans la CI
+Le job de test démarre un service Redis réel.
+Le test /visits utilise ce service afin de vérifier une interaction réelle avec Redis.
+Cache
+Les dépendances Python utilisent le cache intégré de actions/setup-python.
+Artifacts
+Les tests génèrent :
+coverage.xml
+junit.xml
 
-## Docker Compose
+Ces fichiers sont publiés comme artifacts GitHub Actions.
+Action locale réutilisable
+L'action :
+.github/actions/setup-python/action.yml
 
-La stack contient deux services :
+centralise :
+- la configuration Python ;
+- le cache des dépendances ;
+- l'installation de requirements.txt.
+11. Continuous Deployment
+Le workflow CD se trouve dans :
+.github/workflows/cd.yml
 
-- `web` : application Flask executee avec Gunicorn
-- `redis` : stockage persistant du compteur de visites
+Le CD démarre après une CI réussie sur main.
+Il peut également être lancé manuellement avec :
+workflow_dispatch
 
-Les services communiquent via un reseau Docker dedie.
+et l'environnement :
+production
 
-Les donnees Redis sont conservees dans un volume nomme `redis-data`.
+12. GitHub Container Registry
+Les images sont publiées sur :
+ghcr.io/ahmedjer12/atelier3
 
-Le service `web` attend que Redis soit `healthy` avant de demarrer.
+Trois tags sont générés :
+latest
+SHA court du commit
+1.0.0
 
-## Registry Docker Hub
+Exemple :
+ghcr.io/ahmedjer12/atelier3:latest
+ghcr.io/ahmedjer12/atelier3:7cd5e62
+ghcr.io/ahmedjer12/atelier3:1.0.0
 
-Image publiee :
+Le workflow utilise GITHUB_TOKEN avec des permissions explicites :
+permissions:
+  contents: read
+  packages: write
 
-```text
-ahmedjer123/atelier3
-```
+13. Déploiement
+Le déploiement est exécuté sur un GitHub Actions self-hosted runner installé sur une machine Windows.
+Le job de déploiement :
+1. récupère l'image depuis GHCR ;
+2. définit la version et le SHA ;
+3. démarre les services avec Docker Compose ;
+4. vérifie /health ;
+5. enregistre le SHA déployé si le déploiement réussit.
+Le déploiement utilise :
+docker compose --profile green up -d --pull always
 
-Tags :
+14. Healthcheck post-déploiement
+Après le déploiement, le workflow teste :
+http://localhost:5000/health
 
-```text
-ahmedjer123/atelier3:1.0.0
-ahmedjer123/atelier3:latest
-```
+Un maximum de trois tentatives est effectué.
+En cas de succès, le SHA courant est enregistré comme version fonctionnelle.
+15. Rollback
+Le dernier SHA fonctionnel est stocké sur le runner dans :
+C:\actions-runner\deploy-state\previous_sha.txt
 
-Telecharger l'image :
+Si le healthcheck échoue après les trois tentatives :
+1. le workflow récupère le SHA précédent ;
+2. télécharge l'image correspondante ;
+3. redéploie cette image ;
+4. termine le job en erreur afin d'indiquer que le nouveau déploiement a échoué.
+16. Métriques Prometheus
+L'application expose des métriques sur :
+/metrics
 
-```bash
-docker pull ahmedjer123/atelier3:1.0.0
-```
+Compteur de requêtes
+http_requests_total
+
+Labels :
+endpoint
+code
+
+Exemple :
+http_requests_total{code="200",endpoint="/health"}
+
+Histogramme de latence
+http_request_duration_seconds
+
+Il permet de calculer des percentiles tels que :
+- p95 ;
+- p99.
+Informations de déploiement
+app_deployment_info
+
+Expose notamment :
+version
+sha
+
+17. Alertes Prometheus
+Les règles sont définies dans :
+prometheus/alerts.yml
+
+High5xxErrorRate
+Déclenchée lorsque le taux de réponses HTTP 5xx dépasse :
+5 %
+
+pendant :
+5 minutes
+
+Ce seuil permet de détecter une dégradation persistante tout en évitant de déclencher une alerte sur une erreur ponctuelle.
+HighRequestLatencyP95
+Déclenchée lorsque la latence p95 dépasse :
+500 ms
+
+pendant :
+5 minutes
+
+Cette règle permet de détecter une dégradation durable des performances de l'application.
+18. Vérifications principales
+python -m pytest -v
+python -m flake8 app.py test_app.py
+docker compose --profile green config
+docker compose --profile green up -d --build
+curl http://localhost:5000/health
+curl http://localhost:5000/metrics
+
+19. Repository
+GitHub :
+https://github.com/ahmedjer12/atelier3
+
+
+Ensuite dans le terminal :
+
+
+git add README.md
+git commit -m "docs: finalize project README"
+git push
