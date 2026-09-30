@@ -89,7 +89,7 @@ jobs:
       - name: Log in to GHCR
         shell: powershell
         run: |
-          "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Read previous deployed SHA
         id: previous
